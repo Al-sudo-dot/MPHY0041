@@ -126,8 +126,8 @@ if __name__ == "__main__":
 
     # optimisation loop
     freq_print = 100
-    freq_test = 2000
-    total_steps = int(2e5)
+    freq_test = 150
+    total_steps = int(500)
     step = 0
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
@@ -143,10 +143,12 @@ if __name__ == "__main__":
             loss.backward()
             optimizer.step()
 
+            # --- PRINT LOSS EVERY freq_print STEPS ---
             if step % freq_print == 0:
                 print('Step %d loss: %.5f' % (step, loss.item()))
 
-            if step % freq_test == 0:
+            # --- SAVE TEST PREDICTIONS EVERY freq_test STEPS OR AT LAST STEP ---
+            if step % freq_test == 0 or step == total_steps:
                 images_test, id_test = next(iter(test_loader))
                 if use_cuda:
                     images_test = images_test.cuda()
