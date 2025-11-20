@@ -1,60 +1,98 @@
+# ==== Prepare Prostate Data for UNet Training ====
 import os
 import numpy as np
 import nibabel as nib
+from sklearn.model_selection import train_test_split
 
-# --- PATH TO YOUR DATASET ---
-DATASET_PATH = "/Users/anastasia/Desktop/prostate cancer/Dataset_prostate.nosync"
-OUTPUT_PATH = "./data/prostate-data"
+# ====== MODIFY THIS PATH ONLY ======
+DATASET_ROOT = "/Users/anastasia/Desktop/prostate cancer/Dataset_prostate.nosync"
 
-os.makedirs(OUTPUT_PATH, exist_ok=True)
+IMAGES_DIR = os.path.join(DATASET_ROOT, "imagesTr")
+ZONES_DIR  = os.path.join(DATASET_ROOT, "zonesTr")
+OUTPUT_DIR = "./data/prostate-data"
 
-zones_dir = os.path.join(DATASET_PATH, "zonesTr")
-images_dir = os.path.join(DATASET_PATH, "imagesTr")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# --- get all mask filenames ---
-zone_files = sorted([f for f in os.listdir(zones_dir) if f.lower().endswith(".nii")])
 
-# extract 3-digit patient IDs
-patient_ids = sorted([f.split()[0] for f in zone_files])
+# ------------------------------------------------------------
+# Helper functions
+# ------------------------------------------------------------
+def load_nifti(path):
+    return nib.load(path).get_fdata()
 
-print(f"Found {len(patient_ids)} patients")
+def minmax_norm(vol):
+    vmin, vmax = vol.min(), vol.max()
+    return (vol - vmin) / (vmax - vmin + 1e-8)
 
-index = 0
 
-for pid in patient_ids:
+def find_mask(pid):
+    """Find prostate mask matching 'PID ' prefix."""
+    for f in os.listdir(ZONES_DIR):
+        if f.startswith(pid + " "):
+            return os.path.join(ZONES_DIR, f)
+    return None
 
-    # -----------------------------
-    # LOAD PROSTATE MASK (label)
-    # -----------------------------
-    mask_file = [f for f in zone_files if f.startswith(pid)][0]
-    mask_path = os.path.join(zones_dir, mask_file)
-    mask = nib.load(mask_path).get_fdata()
 
-    # -----------------------------
-    # LOAD IMAGE (T2 = *_0000.nii)
-    # -----------------------------
-    image_file = f"{pid}_0000.nii"
+# ------------------------------------------------------------
+# Identify valid patients
+# ------------------------------------------------------------
+print("Scanning imagesTr for T2 files (*.nii)...")
+all_files = sorted(os.listdir(IMAGES_DIR))
 
-    if not os.path.exists(os.path.join(images_dir, image_file)):
-        print(f"Missing T2 image for patient {pid}, skipping")
-        continue
+# T2 images are *_0001.nii
+t2_files = [f for f in all_files if f.endswith("_0001.nii")]
 
-    image_path = os.path.join(images_dir, image_file)
-    image = nib.load(image_path).get_fdata()
+patient_ids = [f.split("_")[0] for f in t2_files]
+print(f"Found {len(patient_ids)} T2 patients")
 
-    # -----------------------------
-    # DOWNSAMPLE TO MATCH TRAINING CODE
-    # -----------------------------
-    image = image[::2, ::2, ::2]
-    mask = mask[::2, ::2, ::2]
+# Safety check
+if len(patient_ids) == 0:
+    raise RuntimeError("❌ No T2 images found. Check your dataset paths.")
 
-    # -----------------------------
-    # SAVE AS NUMPY FILES
-    # -----------------------------
-    np.save(os.path.join(OUTPUT_PATH, f"image_train{index:02d}.npy"), image)
-    np.save(os.path.join(OUTPUT_PATH, f"label_train{index:02d}.npy"), mask)
+# ------------------------------------------------------------
+# Train/Test Split
+# ------------------------------------------------------------
+train_ids, test_ids = train_test_split(patient_ids, test_size=0.20, random_state=42)
 
-    index += 1
-    print(f"Saved patient {pid} as index {index-1}")
 
-print("Done! Files saved in", OUTPUT_PATH)
+# ------------------------------------------------------------
+# Main processing function
+# ------------------------------------------------------------
+def process(pid, split):
+    t2_path = os.path.join(IMAGES_DIR, f"{pid}_0001.nii")
+    mask_path = find_mask(pid)
+
+    if not os.path.exists(t2_path):
+        print(f"⚠ Missing T2 for {pid}, skipping.")
+        return
+
+    if mask_path is None:
+        print(f"⚠ Missing mask for {pid}, skipping.")
+        return
+
+    img = load_nifti(t2_path)
+    mask = load_nifti(mask_path)
+
+    img = minmax_norm(img)
+    mask = (mask > 0.5).astype(np.float32)
+
+    idx = len([f for f in os.listdir(OUTPUT_DIR) if f.startswith(f"image_{split}")])
+
+    np.save(os.path.join(OUTPUT_DIR, f"image_{split}{idx:03d}.npy"), img.astype(np.float32))
+    np.save(os.path.join(OUTPUT_DIR, f"label_{split}{idx:03d}.npy"), mask.astype(np.float32))
+
+    print(f"✓ Saved {pid} → {split}{idx:03d}")
+
+
+# ------------------------------------------------------------
+# Run processing
+# ------------------------------------------------------------
+print("\nProcessing TRAIN patients…")
+for pid in train_ids:
+    process(pid, "train")
+
+print("\nProcessing TEST patients…")
+for pid in test_ids:
+    process(pid, "test")
+
+print("\n✔ DONE — NPY files saved in ./data/prostate-data")

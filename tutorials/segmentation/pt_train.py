@@ -1,164 +1,154 @@
-# This is part of the tutorial materials in the UCL Module MPHY0041: Machine Learning in Medical Imaging
 import os
 import torch
 import numpy as np
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+# -------------------------------
+# Settings
+# -------------------------------
+FOLDER = "./data/prostate-data"
+RESULT = "./result"
+os.makedirs(RESULT, exist_ok=True)
+
 use_cuda = torch.cuda.is_available()
-folder_name = './data/promise12-data'
-RESULT_PATH = './result'
 
-## network class
+
+# -------------------------------
+# Smaller U-Net
+# -------------------------------
 class UNet(torch.nn.Module):
+    def __init__(self, ch_in=1, ch_out=1, base=16):
+        super().__init__()
+        f = base
 
-    def __init__(self, ch_in=1, ch_out=1, init_n_feat=32):
-        super(UNet, self).__init__()
+        self.enc1 = self.block(ch_in, f)
+        self.enc2 = self.block(f, f*2)
+        self.enc3 = self.block(f*2, f*4)
 
-        n_feat = init_n_feat
-        self.encoder1 = UNet._block(ch_in, n_feat)
-        self.pool1 = torch.nn.MaxPool3d(kernel_size=2, stride=2)
-        self.encoder2 = UNet._block(n_feat, n_feat*2)
-        self.pool2 = torch.nn.MaxPool3d(kernel_size=2, stride=2)
-        self.encoder3 = UNet._block(n_feat*2, n_feat*4)
-        self.pool3 = torch.nn.MaxPool3d(kernel_size=2, stride=2)
-        self.encoder4 = UNet._block(n_feat*4, n_feat*8)
-        self.pool4 = torch.nn.MaxPool3d(kernel_size=2, stride=2)
+        self.pool = torch.nn.MaxPool3d(2)
 
-        self.bottleneck = UNet._block(n_feat*8, n_feat*16)
+        self.bottleneck = self.block(f*4, f*8)
 
-        self.upconv4 = torch.nn.ConvTranspose3d(n_feat*16, n_feat*8, kernel_size=2, stride=2)
-        self.decoder4 = UNet._block((n_feat*8)*2, n_feat*8)
-        self.upconv3 = torch.nn.ConvTranspose3d(n_feat*8, n_feat*4, kernel_size=2, stride=2)
-        self.decoder3 = UNet._block((n_feat*4)*2, n_feat*4)
-        self.upconv2 = torch.nn.ConvTranspose3d(n_feat*4, n_feat*2, kernel_size=2, stride=2)
-        self.decoder2 = UNet._block((n_feat*2)*2, n_feat*2)
-        self.upconv1 = torch.nn.ConvTranspose3d(n_feat*2, n_feat, kernel_size=2, stride=2)
-        self.decoder1 = UNet._block(n_feat*2, n_feat)
+        self.up3 = torch.nn.ConvTranspose3d(f*8, f*4, 2, 2)
+        self.dec3 = self.block(f*8, f*4)
 
-        self.conv = torch.nn.Conv3d(in_channels=n_feat, out_channels=ch_out, kernel_size=1)
+        self.up2 = torch.nn.ConvTranspose3d(f*4, f*2, 2, 2)
+        self.dec2 = self.block(f*4, f*2)
 
-    def forward(self, x):
-        enc1 = self.encoder1(x)
-        enc2 = self.encoder2(self.pool1(enc1))
-        enc3 = self.encoder3(self.pool2(enc2))
-        enc4 = self.encoder4(self.pool3(enc3))
+        self.up1 = torch.nn.ConvTranspose3d(f*2, f, 2, 2)
+        self.dec1 = self.block(f*2, f)
 
-        bottleneck = self.bottleneck(self.pool4(enc4))
+        self.out = torch.nn.Conv3d(f, 1, 1)
 
-        dec4 = self.upconv4(bottleneck)
-        dec4 = torch.cat((dec4, enc4), dim=1)
-        dec4 = self.decoder4(dec4)
-        dec3 = self.upconv3(dec4)
-        dec3 = torch.cat((dec3, enc3), dim=1)
-        dec3 = self.decoder3(dec3)
-        dec2 = self.upconv2(dec3)
-        dec2 = torch.cat((dec2, enc2), dim=1)
-        dec2 = self.decoder2(dec2)
-        dec1 = self.upconv1(dec2)
-        dec1 = torch.cat((dec1, enc1), dim=1)
-        dec1 = self.decoder1(dec1)
-        return torch.sigmoid(self.conv(dec1))
-
-    @staticmethod
-    def _block(ch_in, n_feat):
+    def block(self, ni, nf):
         return torch.nn.Sequential(
-            torch.nn.Conv3d(in_channels=ch_in, out_channels=n_feat, kernel_size=3, padding=1, bias=False),
-            torch.nn.BatchNorm3d(num_features=n_feat),
-            torch.nn.ReLU(inplace=True),
-            torch.nn.Conv3d(in_channels=n_feat, out_channels=n_feat, kernel_size=3, padding=1, bias=False),
-            torch.nn.BatchNorm3d(num_features=n_feat),
-            torch.nn.ReLU(inplace=True)
+            torch.nn.Conv3d(ni, nf, 3, padding=1),
+            torch.nn.ReLU(),
+            torch.nn.Conv3d(nf, nf, 3, padding=1),
+            torch.nn.ReLU()
         )
 
-## loss function
-def loss_dice(y_pred, y_true, eps=1e-6):
-    numerator = torch.sum(y_true * y_pred, dim=(2, 3, 4)) * 2
-    denominator = torch.sum(y_true, dim=(2, 3, 4)) + torch.sum(y_pred, dim=(2, 3, 4)) + eps
-    return torch.mean(1. - (numerator / denominator))
+    def forward(self, x):
+        e1 = self.enc1(x)
+        e2 = self.enc2(self.pool(e1))
+        e3 = self.enc3(self.pool(e2))
 
-## data loader
-class NPyDataset(torch.utils.data.Dataset):
-    def __init__(self, folder_name, is_train=True):
-        self.folder_name = folder_name
-        self.is_train = is_train
+        b = self.bottleneck(self.pool(e3))
+
+        d3 = self.dec3(torch.cat([self.up3(b), e3], dim=1))
+        d2 = self.dec2(torch.cat([self.up2(d3), e2], dim=1))
+        d1 = self.dec1(torch.cat([self.up1(d2), e1], dim=1))
+
+        return torch.sigmoid(self.out(d1))
+
+
+# -------------------------------
+# Dice Loss
+# -------------------------------
+def dice_loss(pred, target, eps=1e-6):
+    num = (pred * target).sum((2,3,4)) * 2
+    den = pred.sum((2,3,4)) + target.sum((2,3,4)) + eps
+    return 1 - (num / den).mean()
+
+
+# -------------------------------
+# Dataset loader
+# -------------------------------
+class NPYDataset(torch.utils.data.Dataset):
+    def __init__(self, folder, split):
+        self.folder = folder
+        self.split = split
+        self.files = sorted([f for f in os.listdir(folder) if f.startswith(f"image_{split}")])
 
     def __len__(self):
-        return 50 if self.is_train else 30
+        return len(self.files)
 
     def __getitem__(self, idx):
-        if self.is_train:
-            image = self._load_npy("image_train%02d.npy" % idx)
-            label = self._load_npy("label_train%02d.npy" % idx)
-            return image, label
+        img = np.load(os.path.join(self.folder, self.files[idx])).astype(np.float32)
+        img = torch.tensor(img).unsqueeze(0)
+
+        if self.split == "train":
+            lab = np.load(os.path.join(self.folder, self.files[idx].replace("image", "label")))
+            lab = torch.tensor(lab).unsqueeze(0).float()
+            return img, lab
         else:
-            return self._load_npy("image_test%02d.npy" % idx), idx
+            return img, idx
 
-    def _load_npy(self, filename):
-        filename = os.path.join(self.folder_name, filename)
-        return torch.unsqueeze(torch.tensor(np.float32(np.load(filename)[::2, ::2, ::2])), dim=0)
 
-# === MAIN TRAINING LOOP ===
+# -------------------------------
+# Training
+# -------------------------------
 if __name__ == "__main__":
-    # create result directory if not exists
-    os.makedirs(RESULT_PATH, exist_ok=True)
 
-    model = UNet(1, 1)
+    train_ds = NPYDataset(FOLDER, "train")
+    test_ds  = NPYDataset(FOLDER, "test")
+
+    if len(test_ds) == 0:
+        raise RuntimeError("❌ No test files found — run prepare_prostate_data.py first.")
+
+    train_loader = torch.utils.data.DataLoader(train_ds, batch_size=1, shuffle=True, num_workers=0)
+    test_loader  = torch.utils.data.DataLoader(test_ds,  batch_size=1, shuffle=True, num_workers=0)
+
+    model = UNet()
     if use_cuda:
         model.cuda()
 
-    # training data loader
-    train_set = NPyDataset(folder_name)
-    train_loader = torch.utils.data.DataLoader(
-        train_set,
-        batch_size=4,
-        shuffle=True,
-        num_workers=0  # set 0 for macOS multiprocessing issues
-    )
+    opt = torch.optim.Adam(model.parameters(), lr=1e-4)
 
-    # test data loader
-    test_set = NPyDataset(folder_name, is_train=False)
-    test_loader = torch.utils.data.DataLoader(
-        test_set,
-        batch_size=4,
-        shuffle=True,
-        num_workers=0  # set 0 for macOS
-    )
+    total_steps = 100   # much faster
+    print_every = 20
+    test_every = 50
 
-    # optimisation loop
-    freq_print = 100
-    freq_test = 150
-    total_steps = int(500)
     step = 0
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
     while step < total_steps:
-        for ii, (images, labels) in enumerate(train_loader):
+        for imgs, labs in train_loader:
             step += 1
+
             if use_cuda:
-                images, labels = images.cuda(), labels.cuda()
+                imgs, labs = imgs.cuda(), labs.cuda()
 
-            optimizer.zero_grad()
-            preds = model(images)
-            loss = loss_dice(preds, labels)
+            opt.zero_grad()
+            preds = model(imgs)
+            loss = dice_loss(preds, labs)
             loss.backward()
-            optimizer.step()
+            opt.step()
 
-            # --- PRINT LOSS EVERY freq_print STEPS ---
-            if step % freq_print == 0:
-                print('Step %d loss: %.5f' % (step, loss.item()))
+            if step % print_every == 0:
+                print(f"[Step {step}] Loss = {loss.item():.4f}")
 
-            # --- SAVE TEST PREDICTIONS EVERY freq_test STEPS OR AT LAST STEP ---
-            if step % freq_test == 0 or step == total_steps:
-                images_test, id_test = next(iter(test_loader))
+            if step % test_every == 0 or step == total_steps:
+                imgs_t, ids = next(iter(test_loader))
                 if use_cuda:
-                    images_test = images_test.cuda()
-                preds_test = model(images_test)
-                for idx, index in enumerate(id_test):
-                    filepath_to_save = os.path.join(
-                        RESULT_PATH, "label_test%02d_step%06d-pt.npy" % (index, step))
-                    np.save(filepath_to_save, preds_test.detach()[idx, ...].cpu().numpy().squeeze())
-                    print('Test data saved: {}'.format(filepath_to_save))
+                    imgs_t = imgs_t.cuda()
 
-    # save model
-    torch.save(model, os.path.join(RESULT_PATH, 'saved_model_pt'))
-    print('Model saved.')
+                out = model(imgs_t).detach().cpu().numpy()
+
+                save_path = f"{RESULT}/pred_{ids[0]:03d}.npy"
+                np.save(save_path, out[0,0])
+                print(f"Saved test prediction → {save_path}")
+
+            if step >= total_steps:
+                break
+
+    torch.save(model.state_dict(), f"{RESULT}/model_small.pth")
+    print("✔ Training complete.")
