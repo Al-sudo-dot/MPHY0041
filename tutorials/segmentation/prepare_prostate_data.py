@@ -1,80 +1,66 @@
-# ==== Prepare Prostate Data for UNet Training ====
 import os
 import numpy as np
 import nibabel as nib
 from sklearn.model_selection import train_test_split
 
-# ====== MODIFY THIS PATH ONLY ======
+# ====== CHANGE THIS ONLY IF YOUR DATA MOVES ======
 DATASET_ROOT = "/Users/anastasia/Desktop/prostate cancer/Dataset_prostate.nosync"
-
-IMAGES_DIR = os.path.join(DATASET_ROOT, "imagesTr")
-ZONES_DIR  = os.path.join(DATASET_ROOT, "zonesTr")
+IMAGES_DIR = os.path.join(DATASET_ROOT, "imagesTr")   # T2 = <ID>.nii
+ZONES_DIR  = os.path.join(DATASET_ROOT, "zonesTr")    # Mask = <ID> something.nii
 OUTPUT_DIR = "./data/prostate-data"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# ------------ Helper functions -------------
 
-# ------------------------------------------------------------
-# Helper functions
-# ------------------------------------------------------------
 def load_nifti(path):
     return nib.load(path).get_fdata()
 
-def minmax_norm(vol):
-    vmin, vmax = vol.min(), vol.max()
-    return (vol - vmin) / (vmax - vmin + 1e-8)
-
+def find_t2(pid):
+    """Your T2 is EXACTLY pid.nii (e.g. 067.nii)."""
+    t2_file = f"{pid}.nii"
+    t2_path = os.path.join(IMAGES_DIR, t2_file)
+    if os.path.exists(t2_path):
+        return t2_path
+    raise FileNotFoundError(f"T2 not found for patient {pid}: expected {t2_file}")
 
 def find_mask(pid):
-    """Find prostate mask matching 'PID ' prefix."""
+    """
+    Mask files look like: 067 12.45.22.nii
+    """
     for f in os.listdir(ZONES_DIR):
         if f.startswith(pid + " "):
             return os.path.join(ZONES_DIR, f)
-    return None
+    raise FileNotFoundError(f"Mask not found for patient {pid}")
 
+# ------------ Load patient list -------------
 
-# ------------------------------------------------------------
-# Identify valid patients
-# ------------------------------------------------------------
-print("Scanning imagesTr for T2 files (*.nii)...")
-all_files = sorted(os.listdir(IMAGES_DIR))
+# T2 files are ONLY the ones matching:  ### <ID>.nii ###
+patients = [f.replace(".nii", "") for f in os.listdir(IMAGES_DIR)
+            if f.endswith(".nii") and "_" not in f]   # removes 067_0001.nii etc
 
-# T2 images are *_0001.nii
-t2_files = [f for f in all_files if f.endswith("_0001.nii")]
+patients = sorted(patients)
 
-patient_ids = [f.split("_")[0] for f in t2_files]
-print(f"Found {len(patient_ids)} T2 patients")
+print(f"Found {len(patients)} T2 patients:", patients[:10])
 
-# Safety check
-if len(patient_ids) == 0:
-    raise RuntimeError("❌ No T2 images found. Check your dataset paths.")
+if len(patients) == 0:
+    print("❌ No usable T2 files found! Expected <ID>.nii files.")
+    raise SystemExit
 
-# ------------------------------------------------------------
-# Train/Test Split
-# ------------------------------------------------------------
-train_ids, test_ids = train_test_split(patient_ids, test_size=0.20, random_state=42)
+# ------------ Train/Test Split --------------
 
+train_ids, test_ids = train_test_split(patients, test_size=0.20, random_state=42)
 
-# ------------------------------------------------------------
-# Main processing function
-# ------------------------------------------------------------
-def process(pid, split):
-    t2_path = os.path.join(IMAGES_DIR, f"{pid}_0001.nii")
+# ------------ Process & Save ----------------
+
+def process_and_save(pid, split):
+    t2_path = find_t2(pid)
     mask_path = find_mask(pid)
-
-    if not os.path.exists(t2_path):
-        print(f"⚠ Missing T2 for {pid}, skipping.")
-        return
-
-    if mask_path is None:
-        print(f"⚠ Missing mask for {pid}, skipping.")
-        return
 
     img = load_nifti(t2_path)
     mask = load_nifti(mask_path)
 
-    img = minmax_norm(img)
-    mask = (mask > 0.5).astype(np.float32)
+    mask = (mask > 0).astype(np.float32)
 
     idx = len([f for f in os.listdir(OUTPUT_DIR) if f.startswith(f"image_{split}")])
 
@@ -83,16 +69,14 @@ def process(pid, split):
 
     print(f"✓ Saved {pid} → {split}{idx:03d}")
 
+# ------------ Run processing ----------------
 
-# ------------------------------------------------------------
-# Run processing
-# ------------------------------------------------------------
 print("\nProcessing TRAIN patients…")
 for pid in train_ids:
-    process(pid, "train")
+    process_and_save(pid, "train")
 
 print("\nProcessing TEST patients…")
 for pid in test_ids:
-    process(pid, "test")
+    process_and_save(pid, "test")
 
-print("\n✔ DONE — NPY files saved in ./data/prostate-data")
+print("\n✔ Done! Files saved in ./data/prostate-data")
