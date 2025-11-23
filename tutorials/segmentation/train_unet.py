@@ -123,8 +123,8 @@ if __name__ == "__main__":
 
     opt = torch.optim.Adam(model.parameters(), lr=1e-4)
 
-    total_steps = 100   # small, for debugging
-    print_every = 20
+    total_steps = 500   # small, for debugging
+    print_every = 50
     test_every = 50
 
     step = 0
