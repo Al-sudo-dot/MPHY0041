@@ -86,7 +86,6 @@ class NPYDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         img = np.load(os.path.join(self.folder, self.files[idx])).astype(np.float32)
-        # Shape: (H, W, D) -> (1, H, W, D)
         img = torch.from_numpy(img).unsqueeze(0)
 
         if self.split == "train":
@@ -102,6 +101,7 @@ class NPYDataset(torch.utils.data.Dataset):
 # Training
 # -------------------------------
 if __name__ == "__main__":
+
     train_ds = NPYDataset(FOLDER, "train")
     test_ds  = NPYDataset(FOLDER, "test")
 
@@ -110,12 +110,8 @@ if __name__ == "__main__":
     if len(test_ds) == 0:
         raise RuntimeError("❌ No test files found — run prepare_prostate_data.py first.")
 
-    train_loader = torch.utils.data.DataLoader(
-        train_ds, batch_size=1, shuffle=True, num_workers=0
-    )
-    test_loader = torch.utils.data.DataLoader(
-        test_ds, batch_size=1, shuffle=False, num_workers=0
-    )
+    train_loader = torch.utils.data.DataLoader(train_ds, batch_size=1, shuffle=True)
+    test_loader  = torch.utils.data.DataLoader(test_ds,  batch_size=1, shuffle=False)
 
     model = UNet()
     if use_cuda:
@@ -123,7 +119,7 @@ if __name__ == "__main__":
 
     opt = torch.optim.Adam(model.parameters(), lr=1e-4)
 
-    total_steps = 500   # small, for debugging
+    total_steps = 500
     print_every = 50
     test_every = 50
 
@@ -151,9 +147,14 @@ if __name__ == "__main__":
                 if use_cuda:
                     imgs_t = imgs_t.cuda()
 
-                out = model(imgs_t).detach().cpu().numpy()  # (B,1,H,W,D)
+                out = model(imgs_t).detach().cpu().numpy()
 
-                save_path = os.path.join(RESULT, f"pred_{int(ids[0]):03d}.npy")
+                # ----------- ONLY CHANGE YOU ASKED FOR ----------
+                save_path = os.path.join(
+                    RESULT, f"pred_step{step:04d}_id{int(ids[0]):03d}.npy"
+                )
+                # ------------------------------------------------
+
                 np.save(save_path, out[0, 0])
                 print(f"Saved test prediction → {save_path}")
 

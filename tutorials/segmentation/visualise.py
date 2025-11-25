@@ -2,60 +2,76 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-DATA_DIR = "./data/prostate-data"
-RESULT_DIR = "./result"
-OUT_DIR = "./result/png"
+DATA = "./data/prostate-data"
+PRED = "./result"
+OUT  = "./result/png"
+os.makedirs(OUT, exist_ok=True)
 
-os.makedirs(OUT_DIR, exist_ok=True)
-
-# Load prediction files
-pred_files = sorted([f for f in os.listdir(RESULT_DIR) if f.startswith("pred_") and f.endswith(".npy")])
-
-if len(pred_files) == 0:
-    print("❌ No prediction files found.")
-    exit()
-
-def load_test_image(pred_name):
-    """
-    Convert pred_023.npy → image_test023.npy
-    """
-    pid = pred_name.replace("pred_", "").replace(".npy", "")
-    img_file = f"image_test{pid}.npy"
-    path = os.path.join(DATA_DIR, img_file)
-
+def load_test_image(idx):
+    path = os.path.join(DATA, f"image_test{idx:03d}.npy")
     if not os.path.exists(path):
         raise FileNotFoundError(f"Missing test image: {path}")
-
     return np.load(path)
 
+def extract_ids(filename):
+    """
+    Accepts either:
+        pred_step0050_id000.npy
+        pred_step0050.npy
+    Returns: (step, id)
+    """
+
+    name = filename.replace(".npy", "")
+
+    # Case 1: full format
+    if "_id" in name:
+        # pred_stepXXXX_idYYY
+        step = int(name.split("_")[1].replace("step", ""))
+        pid  = int(name.split("_")[2].replace("id", ""))
+        return step, pid
+
+    # Case 2: shorter format: pred_stepXXXX
+    else:
+        step = int(name.split("_")[1].replace("step", ""))
+        pid  = 0      # default id
+        return step, pid
+
+
+def plot_strip(img, pred, savepath, title):
+    nz = img.shape[2]
+    step = max(1, nz // 8)
+    slices = list(range(0, nz, step))[:8]
+
+    fig, axarr = plt.subplots(len(slices), 2, figsize=(6, 16))
+
+    for i, z in enumerate(slices):
+        axarr[i, 0].imshow(img[:, :, z], cmap="gray")
+        axarr[i, 0].set_title(f"Image z={z}")
+        axarr[i, 0].axis("off")
+
+        axarr[i, 1].imshow(pred[:, :, z], cmap="gray")
+        axarr[i, 1].set_title("Prediction")
+        axarr[i, 1].axis("off")
+
+    plt.tight_layout()
+    plt.savefig(savepath, dpi=120)
+    plt.close()
+    print(f"✓ Saved strip: {savepath}")
+
+
+# ---------------------------
+# MAIN
+# ---------------------------
+pred_files = sorted([f for f in os.listdir(PRED) if f.endswith(".npy")])
+
+print(f"Found {len(pred_files)} prediction files.")
 
 for f in pred_files:
+    print(f"Processing: {f}")
+    step, pid = extract_ids(f)
 
-    pred = np.load(os.path.join(RESULT_DIR, f))   # (160,160,64)
-    img  = load_test_image(f)                     # (160,160,64)
+    pred = np.load(os.path.join(PRED, f))
+    img  = load_test_image(pid)
 
-    # Select 8 evenly-spaced slices
-    num_slices = 8
-    depth = pred.shape[2]
-    indices = np.linspace(0, depth-1, num_slices).astype(int)
-
-    fig, axes = plt.subplots(num_slices, 2, figsize=(6, num_slices*2))
-
-    for i, z in enumerate(indices):
-
-        axes[i,0].imshow(img[:,:,z], cmap="gray")
-        axes[i,0].set_title(f"Image z={z}")
-        axes[i,0].axis("off")
-
-        axes[i,1].imshow(pred[:,:,z], cmap="gray")
-        axes[i,1].set_title("Prediction")
-        axes[i,1].axis("off")
-
-    out_path = os.path.join(OUT_DIR, f.replace(".npy", ".png"))
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=150)
-    plt.close()
-
-    print(f"✓ Saved strip: {out_path}")
-
-print("\n✔ All image strips saved in ./result/png/")
+    savepath = os.path.join(OUT, f"pred_{pid:03d}_step{step:04d}.png")
+    plot_strip(img, pred, savepath, f"ID {pid} step {step}")
