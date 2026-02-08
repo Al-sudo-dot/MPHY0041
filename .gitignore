@@ -1,0 +1,27 @@
+
+# datasets & generated outputs
+data/
+result*/
+nii_png/
+patient_*_png/
+*.nii
+*.nii.gz
+
+# macOS
+.DS_Store
+
+# datasets & generated outputs (keep local)
+data/
+result*/
+nii_png/
+patient_*_png/
+*.nii
+*.nii.gz
+.DS_Store
+
+# macOS
+.DS_Store
+
+# data / generated artifacts (do not commit)
+data/
+*.npy
