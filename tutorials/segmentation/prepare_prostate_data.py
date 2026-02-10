@@ -4,7 +4,7 @@ import nibabel as nib
 from sklearn.model_selection import train_test_split
 
 # ====== CHANGE THIS ONLY IF YOUR DATA MOVES ======
-DATASET_ROOT = "/Users/anastasia/Desktop/prostate cancer/Dataset_prostate.nosync"
+DATASET_ROOT = "/cs/student/projects4/misc/alukic/datasets/Dataset_prostate.nosync"
 IMAGES_DIR   = os.path.join(DATASET_ROOT, "imagesTr")   # T2 = <ID>.nii
 ZONES_DIR    = os.path.join(DATASET_ROOT, "zonesTr")    # Prostate mask = "<ID> something.nii"
 OUTPUT_DIR   = "./data/prostate-data"

@@ -1,6 +1,6 @@
 import os, numpy as np, nibabel as nib
 
-DATASET_ROOT = "/Users/anastasia/Desktop/prostate cancer/Dataset_prostate.nosync"
+DATASET_ROOT = "/cs/student/projects4/misc/alukic/datasets/Dataset_prostate.nosync"
 IMAGES_DIR   = os.path.join(DATASET_ROOT, "imagesTr")
 LABELS_DIR   = os.path.join(DATASET_ROOT, "labelsTr")
 

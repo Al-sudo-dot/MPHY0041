@@ -25,3 +25,11 @@ patient_*_png/
 # data / generated artifacts (do not commit)
 data/
 *.npy
+
+# External / nested repos
+MONAI/
+MPHY0041/
+
+# Large data & outputs
+datasets/
+outputs/
