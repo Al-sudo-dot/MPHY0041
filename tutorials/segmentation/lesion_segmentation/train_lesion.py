@@ -8,25 +8,25 @@ from torch.utils.data import Dataset, DataLoader
 # ============================================================
 # PATHS (run from MPHY0041 root)
 # ============================================================
-DATA_DIR   = "./data/lesion-data"
-RESULT_DIR = os.environ.get("RESULT_DIR", "./result/lesion")
+DATA_DIR = "/cs/student/projects4/misc/alukic/outputs/lesion-data"
+RESULT_DIR = os.environ.get("RESULT_DIR", "/cs/student/projects4/misc/alukic/results/lesion")
 os.makedirs(RESULT_DIR, exist_ok=True)
 
 # ============================================================
 # STEP-BASED TRAINING SETTINGS (matches prostate style)
 # ============================================================
 BATCH_SIZE   = 2
-TOTAL_STEPS  = 100          # like prostate
-PRINT_EVERY  = 20           # prints [Step XX]
-SAVE_EVERY   = 20           # saves pred_stepXXXX_id000.npy
+TOTAL_STEPS  = int(os.environ.get("TOTAL_STEPS", "100"))          # like prostate
+PRINT_EVERY  = int(os.environ.get("PRINT_EVERY", "20"))          # prints [Step XX]
+SAVE_EVERY   = int(os.environ.get("SAVE_EVERY", "50"))           # saves pred_stepXXXX_id000.npy
 LR           = 1e-3
 
 # lesion imbalance
-POS_WEIGHT = float(os.environ.get("POS_WEIGHT", "30"))
+POS_WEIGHT = float(os.environ.get("POS_WEIGHT", "10"))
 
 # patching
-PATCH_SIZE = (64, 64, 32)   # (Z,Y,X)
-POS_PATCH_PROB = 0.5
+PATCH_SIZE = (32,96,96)   # (Z,Y,X)
+POS_PATCH_PROB = float(os.environ.get("POS_PATCH_PROB", "0.8"))
 
 # keep simple / stable on mac
 NUM_WORKERS = 0
@@ -34,25 +34,32 @@ NUM_WORKERS = 0
 # ============================================================
 # PATCH SAMPLING
 # ============================================================
-def sample_patch(X, y, patch_size, force_positive=False):
+def sample_patch(X, y, patch_size, force_positive=False, prostate_mask=None):
     """
     X: (C,Z,Y,X)
-    y: (Z,Y,X)
+    y: (Z,Y,X) binary {0,1}
+    prostate_mask: (Z,Y,X) binary {0,1} used to sample negatives within prostate
     """
     C, Dz, Dy, Dx = X.shape
     pz, py, px = patch_size
 
+    def clamp(c, P, D):
+        half = P // 2
+        return max(half, min(int(c), D - half - 1))
+
+    # Choose a center voxel
     if force_positive and y.sum() > 0:
         pos = np.array(np.where(y == 1))
         cz, cy, cx = pos[:, np.random.randint(pos.shape[1])]
     else:
-        cz = np.random.randint(0, Dz)
-        cy = np.random.randint(0, Dy)
-        cx = np.random.randint(0, Dx)
-
-    def clamp(c, P, D):
-        half = P // 2
-        return max(half, min(c, D - half - 1))
+        # Prefer sampling from prostate region if provided
+        if prostate_mask is not None and prostate_mask.sum() > 0:
+            pts = np.array(np.where(prostate_mask > 0))
+            cz, cy, cx = pts[:, np.random.randint(pts.shape[1])]
+        else:
+            cz = np.random.randint(0, Dz)
+            cy = np.random.randint(0, Dy)
+            cx = np.random.randint(0, Dx)
 
     cz, cy, cx = clamp(cz, pz, Dz), clamp(cy, py, Dy), clamp(cx, px, Dx)
 
@@ -92,17 +99,27 @@ class LesionPatchDataset(Dataset):
             y = y[0]
         y = (y > 0).astype(np.uint8)
 
+        # use channel 2 as prostate mask (3rd channel)
+        prostate = (X[2] > 0).astype(np.uint8) if X.shape[0] >= 3 else None
+
         force_pos = (np.random.rand() < POS_PATCH_PROB)
 
-        # sample a patch (try a couple times if forcing positive)
-        for _ in range(3):
-            Xp, yp = sample_patch(X, y, PATCH_SIZE, force_positive=force_pos)
-            if (not force_pos) or (yp.sum() > 0) or (y.sum() == 0):
+        # try harder to get lesion-containing patch when forcing positive
+        for _ in range(10):
+            Xp, yp = sample_patch(
+                X,
+                y,
+                PATCH_SIZE,
+                force_positive=force_pos,
+                prostate_mask=prostate,
+            )
+            if (not force_pos) or (yp.sum() > 0):
                 break
 
-        Xp = torch.from_numpy(Xp).float()               # (3,pz,py,px)
-        yp = torch.from_numpy(yp[None, ...]).float()    # (1,pz,py,px)
+        Xp = torch.from_numpy(Xp).float()              # (3,pz,py,px)
+        yp = torch.from_numpy(yp[None, ...]).float()   # (1,pz,py,px)
         return Xp, yp
+
 
 # ============================================================
 # MODEL: small 3D U-Net (CPU)
@@ -145,19 +162,42 @@ class UNet(torch.nn.Module):
 # ============================================================
 # COMBINED LOSS: BCEWithLogits + Dice
 # ============================================================
-def dice_loss_with_logits(logits, target, eps=1e-6):
+def dice_loss_with_logits(logits, target, mask=None, eps=1e-6):
+    """
+    logits: (B,1,D,H,W)
+    target: (B,1,D,H,W)
+    mask:   (B,1,D,H,W) with 1 inside prostate, 0 outside
+    """
     p = torch.sigmoid(logits)
-    num = (p * target).sum((2,3,4)) * 2
-    den = p.sum((2,3,4)) + target.sum((2,3,4)) + eps
+
+    if mask is not None:
+        p = p * mask
+        target = target * mask
+
+    num = (p * target).sum((2, 3, 4)) * 2
+    den = p.sum((2, 3, 4)) + target.sum((2, 3, 4)) + eps
     return 1 - (num / den).mean()
 
-def combined_loss(logits, target):
-    pos_w = torch.tensor(POS_WEIGHT)  # CPU tensor
-    bce = torch.nn.functional.binary_cross_entropy_with_logits(
-        logits, target, pos_weight=pos_w
+
+def combined_loss(logits, target, mask=None):
+    """
+    Masked BCEWithLogits + Masked Dice
+    """
+    pos_w = torch.tensor(POS_WEIGHT, device=logits.device)
+
+    # BCE per-voxel (no reduction yet)
+    bce_map = torch.nn.functional.binary_cross_entropy_with_logits(
+        logits, target, pos_weight=pos_w, reduction="none"
     )
-    dsc = dice_loss_with_logits(logits, target)
-    return 0.5*bce + 0.5*dsc
+
+    if mask is not None:
+        bce = (bce_map * mask).sum() / (mask.sum() + 1e-6)
+    else:
+        bce = bce_map.mean()
+
+    dsc = dice_loss_with_logits(logits, target, mask=mask)
+
+    return 0.5 * bce + 0.5 * dsc
 
 # ============================================================
 # FULL-VOLUME PREDICTION (for saving like prostate)
@@ -172,7 +212,7 @@ def predict_full_volume(model, volume3ch):
     x = torch.from_numpy(volume3ch[None, ...]).float()  # (1,3,Z,Y,X)
     logits = model(x)                                   # (1,1,Z,Y,X)
     prob = torch.sigmoid(logits)[0, 0].cpu().numpy()
-    pred = (prob >= 0.5).astype(np.uint8)
+    pred = (prob >= 0.6).astype(np.uint8)
     return pred
 
 # ============================================================
@@ -207,8 +247,14 @@ def main():
 
         model.train()
         opt.zero_grad(set_to_none=True)
+
         logits = model(X)
-        loss = combined_loss(logits, Y)
+
+        # prostate mask comes from channel 2 (3rd channel)
+        mask = (X[:, 2:3] > 0).float()
+
+        loss = combined_loss(logits, Y, mask)
+
         loss.backward()
         opt.step()
 
